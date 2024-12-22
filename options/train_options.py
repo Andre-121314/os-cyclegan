@@ -35,6 +35,9 @@ class TrainOptions(BaseOptions):
         parser.add_argument('--pool_size', type=int, default=50, help='the size of image buffer that stores previously generated images')
         parser.add_argument('--lr_policy', type=str, default='linear', help='learning rate policy. [linear | step | plateau | cosine]')
         parser.add_argument('--lr_decay_iters', type=int, default=50, help='multiply by a gamma every lr_decay_iters iterations')
-
+        # [MOD] 新增: 是否使用自注意力
+        parser.add_argument('--use_self_attention', action='store_true', help = 'if specified, use self-attention in generator')
+        # [MOD] 新增: SSIM损失权重，若为0则不启用
+        parser.add_argument('--lambda_SSIM', type=float, default=0.5, help = 'weight for SSIM loss. If 0, SSIM is disabled.')
         self.isTrain = True
         return parser

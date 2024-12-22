@@ -36,6 +36,22 @@ class CycleGANModel(BaseModel):
         Backward cycle loss: lambda_B * ||G_A(G_B(B)) - B|| (Eqn. (2) in the paper)
         Identity loss (optional): lambda_identity * (||G_A(B) - B|| * lambda_B + ||G_B(A) - A|| * lambda_A) (Sec 5.2 "Photo generation from paintings" in the paper)
         Dropout is not used in the original CycleGAN paper.
+           CycleGAN Model initialization.
+
+    Parameters:
+    -----------
+    opt: 解析后的命令行参数，包括(但不限于):
+         --use_self_attention : bool
+            是否在生成器中启用自注意力模块 (默认False，即不启用)。
+            使用方式:
+              python train.py --use_self_attention
+            若不加该标志，默认为关闭。
+
+         --lambda_SSIM : float
+            SSIM损失函数的权重。如果取0表示不使用SSIM。
+            使用方式:
+              python train.py --lambda_SSIM 1.0
+            表示将权重设为1.0 (你可自行选择合适的超参数)。
         """
         parser.set_defaults(no_dropout=True)  # default CycleGAN did not use dropout
         if is_train:
@@ -73,10 +89,21 @@ class CycleGANModel(BaseModel):
         # define networks (both Generators and discriminators)
         # The naming is different from those used in the paper.
         # Code (vs. paper): G_A (G), G_B (F), D_A (D_Y), D_B (D_X)
-        self.netG_A = networks.define_G(opt.input_nc, opt.output_nc, opt.ngf, opt.netG, opt.norm,
-                                        not opt.no_dropout, opt.init_type, opt.init_gain, self.gpu_ids)
-        self.netG_B = networks.define_G(opt.output_nc, opt.input_nc, opt.ngf, opt.netG, opt.norm,
-                                        not opt.no_dropout, opt.init_type, opt.init_gain, self.gpu_ids)
+        # self.netG_A = networks.define_G(opt.input_nc, opt.output_nc, opt.ngf, opt.netG, opt.norm,
+        #                                 not opt.no_dropout, opt.init_type, opt.init_gain, self.gpu_ids)
+        # self.netG_B = networks.define_G(opt.output_nc, opt.input_nc, opt.ngf, opt.netG, opt.norm,
+        #                                 not opt.no_dropout, opt.init_type, opt.init_gain, self.gpu_ids)
+        # 在 cycle_gan_model.py 里 __init__ 的简化示例：
+        self.netG_A = networks.define_G(opt.input_nc, opt.output_nc, opt.ngf, opt.netG,
+                                        opt.norm, not opt.no_dropout, opt.init_type,
+                                        opt.init_gain, self.gpu_ids,
+                                        use_self_attention=opt.use_self_attention)
+
+        # 若要给 netG_B 也加自注意力，请同样写法：
+        self.netG_B = networks.define_G(opt.output_nc, opt.input_nc, opt.ngf, opt.netG,
+                                        opt.norm, not opt.no_dropout, opt.init_type,
+                                        opt.init_gain, self.gpu_ids,
+                                        use_self_attention=opt.use_self_attention)
 
         if self.isTrain:  # define discriminators
             self.netD_A = networks.define_D(opt.output_nc, opt.ndf, opt.netD,
