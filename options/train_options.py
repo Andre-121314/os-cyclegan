@@ -39,5 +39,8 @@ class TrainOptions(BaseOptions):
         parser.add_argument('--use_self_attention', action='store_true', help = 'if specified, use self-attention in generator')
         #  [MOD] 新增: SSIM损失权重，若为0则不启用
         # parser.add_argument('--lambda_SSIM', type=float, default=0.5, help = 'weight for SSIM loss. If 0, SSIM is disabled.')
+        # [MOD] 新增: 是否使用混合精度(AMP)
+        parser.add_argument('--use_amp', action='store_true', help = 'if specified, enable automatic mixed precision training')
+
         self.isTrain = True
         return parser

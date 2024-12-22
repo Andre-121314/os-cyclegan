@@ -129,6 +129,12 @@ class CycleGANModel(BaseModel):
             self.optimizers.append(self.optimizer_G)
             self.optimizers.append(self.optimizer_D)
 
+            # [MOD for AMP] 如果用户指定了 --use_amp，则启用GradScaler
+            if opt.use_amp:
+                self.scaler = GradScaler()
+            else:
+                self.scaler = None
+
     def set_input(self, input):
         """Unpack input data from the dataloader and perform necessary pre-processing steps.
 
@@ -168,7 +174,7 @@ class CycleGANModel(BaseModel):
         loss_D_fake = self.criterionGAN(pred_fake, False)
         # Combined loss and calculate gradients
         loss_D = (loss_D_real + loss_D_fake) * 0.5
-        loss_D.backward()
+        # loss_D.backward()
         return loss_D
 
     def backward_D_A(self):
@@ -224,22 +230,73 @@ class CycleGANModel(BaseModel):
                        self.loss_idt_A + self.loss_idt_B +
                        self.loss_SSIM_B)
 
-        self.loss_G.backward()
-    def optimize_parameters(self):
+        # self.loss_G.backward()
+    # def optimize_parameters(self):
         """Calculate losses, gradients, and update network weights; called in every training iteration"""
-        # forward
-        self.forward()      # compute fake images and reconstruction images.
-        # G_A and G_B
-        self.set_requires_grad([self.netD_A, self.netD_B], False)  # Ds require no gradients when optimizing Gs
-        self.optimizer_G.zero_grad()  # set G_A and G_B's gradients to zero
-        self.backward_G()             # calculate gradients for G_A and G_B
-        self.optimizer_G.step()       # update G_A and G_B's weights
-        # D_A and D_B
-        self.set_requires_grad([self.netD_A, self.netD_B], True)
-        self.optimizer_D.zero_grad()   # set D_A and D_B's gradients to zero
-        self.backward_D_A()      # calculate gradients for D_A
-        self.backward_D_B()      # calculate graidents for D_B
-        self.optimizer_D.step()  # update D_A and D_B's weights
+        #
+        # # forward
+        # self.forward()      # compute fake images and reconstruction images.
+        # # G_A and G_B
+        # self.set_requires_grad([self.netD_A, self.netD_B], False)  # Ds require no gradients when optimizing Gs
+        # self.optimizer_G.zero_grad()  # set G_A and G_B's gradients to zero
+        # self.backward_G()             # calculate gradients for G_A and G_B
+        # self.optimizer_G.step()       # update G_A and G_B's weights
+        # # D_A and D_B
+        # self.set_requires_grad([self.netD_A, self.netD_B], True)
+        # self.optimizer_D.zero_grad()   # set D_A and D_B's gradients to zero
+        # self.backward_D_A()      # calculate gradients for D_A
+        # self.backward_D_B()      # calculate graidents for D_B
+        # self.optimizer_D.step()  # update D_A and D_B's weights
+    def optimize_parameters(self):
+        """
+        [MOD for AMP] 在这里根据 opt.use_amp 决定是否用autocast + GradScaler
+        """
+        if self.opt.use_amp and self.scaler is not None:
+            # ========== 使用自动混合精度(AMP) ==========
+            # 1) forward + G loss
+            with autocast():
+                self.forward()
+                # 不要在这里 backward_G() 直接 .backward()
+                # 只做loss的计算
+                self.backward_G()
+                loss_g = self.loss_G  # 生成器整体loss
+
+            # 2) backward G
+            self.set_requires_grad([self.netD_A, self.netD_B], False)
+            self.optimizer_G.zero_grad()
+            # 用 scaler.scale(loss) 来 backward
+            self.scaler.scale(loss_g).backward()
+            self.scaler.step(self.optimizer_G)
+            self.scaler.update()
+
+            # 3) backward D
+            self.set_requires_grad([self.netD_A, self.netD_B], True)
+            self.optimizer_D.zero_grad()
+            with autocast():
+                self.backward_D_A()
+                self.backward_D_B()
+                loss_d = self.loss_D_A + self.loss_D_B
+            self.scaler.scale(loss_d).backward()
+            self.scaler.step(self.optimizer_D)
+            self.scaler.update()
+
+
+        else:
+            # ========== 不使用AMP，原FP32训练流程 ==========
+            self.forward()
+            # G
+            self.set_requires_grad([self.netD_A, self.netD_B], False)
+            self.optimizer_G.zero_grad()
+            self.backward_G()  # 只算 self.loss_G
+            self.loss_G.backward()  # ←这里做一次纯FP32 backward
+            self.optimizer_G.step()
+            # D
+            self.set_requires_grad([self.netD_A, self.netD_B], True)
+            self.optimizer_D.zero_grad()
+            self.backward_D_A()  # 只算 self.loss_D_A
+            self.backward_D_B()  # 只算 self.loss_D_B
+            (self.loss_D_A + self.loss_D_B).backward()
+            self.optimizer_D.step()
 class SSIMLoss(nn.Module):
     """Simplified SSIM Loss"""
     def __init__(self, window_size=11):
