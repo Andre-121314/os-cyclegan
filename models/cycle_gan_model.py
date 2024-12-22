@@ -4,7 +4,8 @@ from util.image_pool import ImagePool
 from .base_model import BaseModel
 from . import networks
 from torch.cuda.amp import autocast, GradScaler
-
+import torch.nn as nn
+import torch.nn.functional as F
 class CycleGANModel(BaseModel):
     """
     This class implements the CycleGAN model, for learning image-to-image translation without paired data.
@@ -41,6 +42,7 @@ class CycleGANModel(BaseModel):
             parser.add_argument('--lambda_A', type=float, default=10.0, help='weight for cycle loss (A -> B -> A)')
             parser.add_argument('--lambda_B', type=float, default=10.0, help='weight for cycle loss (B -> A -> B)')
             parser.add_argument('--lambda_identity', type=float, default=0.5, help='use identity mapping. Setting lambda_identity other than 0 has an effect of scaling the weight of the identity mapping loss. For example, if the weight of the identity loss should be 10 times smaller than the weight of the reconstruction loss, please set lambda_identity = 0.1')
+            parser.add_argument('--lambda_SSIM', type=float, default=0.0, help='weight for the SSIM loss. If 0, no SSIM is used.')
 
         return parser
 
@@ -52,7 +54,8 @@ class CycleGANModel(BaseModel):
         """
         BaseModel.__init__(self, opt)
         # specify the training losses you want to print out. The training/test scripts will call <BaseModel.get_current_losses>
-        self.loss_names = ['D_A', 'G_A', 'cycle_A', 'idt_A', 'D_B', 'G_B', 'cycle_B', 'idt_B']
+        # self.loss_names = ['D_A', 'G_A', 'cycle_A', 'idt_A', 'D_B', 'G_B', 'cycle_B', 'idt_B']
+        self.loss_names = ['D_A', 'G_A', 'cycle_A', 'idt_A', 'D_B', 'G_B', 'cycle_B', 'idt_B', 'SSIM_B']
         # specify the images you want to save/display. The training/test scripts will call <BaseModel.get_current_visuals>
         visual_names_A = ['real_A', 'fake_B', 'rec_A']
         visual_names_B = ['real_B', 'fake_A', 'rec_B']
@@ -90,6 +93,9 @@ class CycleGANModel(BaseModel):
             self.criterionGAN = networks.GANLoss(opt.gan_mode).to(self.device)  # define GAN loss.
             self.criterionCycle = torch.nn.L1Loss()
             self.criterionIdt = torch.nn.L1Loss()
+            # ---- 新增 SSIMLoss
+            self.criterionSSIM = SSIMLoss().to(self.device)
+            self.lambda_SSIM = opt.lambda_SSIM
             # initialize optimizers; schedulers will be automatically created by function <BaseModel.setup>.
             self.optimizer_G = torch.optim.Adam(itertools.chain(self.netG_A.parameters(), self.netG_B.parameters()), lr=opt.lr, betas=(opt.beta1, 0.999))
             self.optimizer_D = torch.optim.Adam(itertools.chain(self.netD_A.parameters(), self.netD_B.parameters()), lr=opt.lr, betas=(opt.beta1, 0.999))
@@ -173,10 +179,25 @@ class CycleGANModel(BaseModel):
         self.loss_cycle_A = self.criterionCycle(self.rec_A, self.real_A) * lambda_A
         # Backward cycle loss || G_A(G_B(B)) - B||
         self.loss_cycle_B = self.criterionCycle(self.rec_B, self.real_B) * lambda_B
-        # combined loss and calculate gradients
-        self.loss_G = self.loss_G_A + self.loss_G_B + self.loss_cycle_A + self.loss_cycle_B + self.loss_idt_A + self.loss_idt_B
-        self.loss_G.backward()
+        # # combined loss and calculate gradients
+        # self.loss_G = self.loss_G_A + self.loss_G_B + self.loss_cycle_A + self.loss_cycle_B + self.loss_idt_A + self.loss_idt_B
+        # self.loss_G.backward()
+        # ----- 新增SSIM loss (示例：对fake_B vs real_B)
+        if self.lambda_SSIM > 0:
+            self.loss_SSIM_B = self.criterionSSIM(self.fake_B, self.real_B) * self.lambda_SSIM
+        else:
+            self.loss_SSIM_B = 0
 
+        # 如果想对fake_A vs real_A也加：
+        # self.loss_SSIM_A = self.criterionSSIM(self.fake_A, self.real_A) * self.lambda_SSIM
+        # self.loss_SSIM_B += self.loss_SSIM_A
+
+        self.loss_G = (self.loss_G_A + self.loss_G_B +
+                       self.loss_cycle_A + self.loss_cycle_B +
+                       self.loss_idt_A + self.loss_idt_B +
+                       self.loss_SSIM_B)
+
+        self.loss_G.backward()
     def optimize_parameters(self):
         """Calculate losses, gradients, and update network weights; called in every training iteration"""
         # forward
@@ -192,3 +213,27 @@ class CycleGANModel(BaseModel):
         self.backward_D_A()      # calculate gradients for D_A
         self.backward_D_B()      # calculate graidents for D_B
         self.optimizer_D.step()  # update D_A and D_B's weights
+class SSIMLoss(nn.Module):
+    """Simplified SSIM Loss"""
+    def __init__(self, window_size=11):
+        super(SSIMLoss, self).__init__()
+        self.window_size = window_size
+        # 这里可以自定义卷积核 window
+
+    def forward(self, img1, img2):
+        # 这里只是一个占位示例，你可根据需要替换更完整的SSIM
+        # 常见做法是 return 1 - ssim_val 作为loss
+        # 这里直接给一个非常简单的写法
+        C1 = 0.01 ** 2
+        C2 = 0.03 ** 2
+
+        mu1 = F.avg_pool2d(img1, kernel_size=self.window_size, stride=1, padding=0)
+        mu2 = F.avg_pool2d(img2, kernel_size=self.window_size, stride=1, padding=0)
+        sigma1_sq = F.avg_pool2d(img1 * img1, self.window_size, 1, 0) - mu1.pow(2)
+        sigma2_sq = F.avg_pool2d(img2 * img2, self.window_size, 1, 0) - mu2.pow(2)
+        sigma12 = F.avg_pool2d(img1 * img2, self.window_size, 1, 0) - mu1 * mu2
+
+        ssim_map = ((2 * mu1 * mu2 + C1) * (2 * sigma12 + C2)) / \
+                   ((mu1.pow(2) + mu2.pow(2) + C1) * (sigma1_sq + sigma2_sq + C2))
+        ssim_val = ssim_map.mean()
+        return 1 - ssim_val  # 作为loss, 越小越好
