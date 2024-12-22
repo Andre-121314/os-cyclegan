@@ -97,3 +97,5 @@ class TemplateModel(BaseModel):
         self.optimizer.zero_grad()   # clear network G's existing gradients
         self.backward()              # calculate gradients for network G
         self.optimizer.step()        # update gradients for network G
+        if self.isTrain:
+            self.schedulers[0].step()  # update learning rate

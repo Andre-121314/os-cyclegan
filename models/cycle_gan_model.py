@@ -3,7 +3,7 @@ import itertools
 from util.image_pool import ImagePool
 from .base_model import BaseModel
 from . import networks
-
+from torch.cuda.amp import autocast, GradScaler
 
 class CycleGANModel(BaseModel):
     """

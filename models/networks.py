@@ -3,6 +3,7 @@ import torch.nn as nn
 from torch.nn import init
 import functools
 from torch.optim import lr_scheduler
+import torch.nn.functional as F
 
 
 ###############################################################################
@@ -343,31 +344,31 @@ class ResnetGenerator(nn.Module):
                  norm_layer(ngf),
                  nn.ReLU(True)]
 
-        '''
+
         n_downsampling = 2
         for i in range(n_downsampling):  # add downsampling layers
             mult = 2 ** i
             model += [nn.Conv2d(ngf * mult, ngf * mult * 2, kernel_size=3, stride=2, padding=1, bias=use_bias),
                       norm_layer(ngf * mult * 2),
                       nn.ReLU(True)]
-        '''
 
 
-        # mult = 2 ** n_downsampling
-        mult = 1
+
+        mult = 2 ** n_downsampling
+        # mult = 1
         for i in range(n_blocks):       # add ResNet blocks
 
             model += [ResnetBlock(ngf * mult, padding_type=padding_type, norm_layer=norm_layer, use_dropout=use_dropout, use_bias=use_bias)]
-        '''
+
         for i in range(n_downsampling):  # add upsampling layers
             mult = 2 ** (n_downsampling - i)
             model += [nn.ConvTranspose2d(ngf * mult, int(ngf * mult / 2),
-                                         kernel_size=3, stride=2,nme
+                                         kernel_size=3, stride=2,
                                          padding=1, output_padding=1,
                                          bias=use_bias),
                       norm_layer(int(ngf * mult / 2)),
                       nn.ReLU(True)]
-        '''
+
         model += [nn.ReflectionPad2d(3)]
         model += [nn.Conv2d(ngf, output_nc, kernel_size=7, padding=0)]
         model += [nn.Tanh()]
@@ -619,3 +620,52 @@ class PixelDiscriminator(nn.Module):
     def forward(self, input):
         """Standard forward."""
         return self.net(input)
+
+
+class Self_Attention(nn.Module):
+    """ Self-Attention Layer """
+
+    def __init__(self, in_dim, activation=None):
+        super(Self_Attention, self).__init__()
+        self.chanel_in = in_dim
+
+        # 这里的 conv 都是 1×1 卷积
+        self.query_conv = nn.Conv2d(in_channels=in_dim, out_channels=in_dim // 8, kernel_size=1)
+        self.key_conv = nn.Conv2d(in_channels=in_dim, out_channels=in_dim // 8, kernel_size=1)
+        self.value_conv = nn.Conv2d(in_channels=in_dim, out_channels=in_dim, kernel_size=1)
+
+        self.gamma = nn.Parameter(torch.zeros(1))  # 学习缩放参数，初始化为0
+        self.softmax = nn.Softmax(dim=-1)  # 对最后一个维度做softmax
+
+        self.activation = activation
+
+    def forward(self, x):
+        """
+        inputs:
+            x: (B, C, W, H)
+        returns:
+            out: self-attention之后的特征 (B, C, W, H)
+        """
+        m_batchsize, C, width, height = x.size()
+
+        # proj_query: B x (C//8) x N   (N = W*H)，再 permute 到 B x N x (C//8)
+        proj_query = self.query_conv(x).view(m_batchsize, -1, width * height)  # (B, C//8, N)
+        proj_query = proj_query.permute(0, 2, 1)  # (B, N, C//8)
+
+        # proj_key: B x (C//8) x N
+        proj_key = self.key_conv(x).view(m_batchsize, -1, width * height)  # (B, C//8, N)
+
+        # 矩阵乘法，得到 (B, N, N)
+        energy = torch.bmm(proj_query, proj_key)  # (B, N, C//8) x (B, C//8, N) -> (B, N, N)
+        attention = self.softmax(energy)  # 在最后一个维度做softmax
+
+        # proj_value: B x C x N
+        proj_value = self.value_conv(x).view(m_batchsize, C, -1)  # (B, C, N)
+
+        # 注意力加权后，再 reshape 回去
+        out = torch.bmm(proj_value, attention.permute(0, 2, 1))  # (B, C, N) x (B, N, N) -> (B, C, N)
+        out = out.view(m_batchsize, C, width, height)
+
+        # learnable parameter gamma
+        out = self.gamma * out + x
+        return out
